@@ -11,13 +11,13 @@ io.on('connection', (socket) => {
     console.log('Player connected:', socket.id);
 
     // Initialize player state
-    player[socket.id] = {
+    players[socket.id] = {
         x: Math.random() * 800,
         y: Math.random() * 600,
         score: 0    
     };
 
-    // Send current platers to the new player
+    // Send current players to the new player
     socket.emit('currentPlayers', players);
 
     // Notify existing players of the new player
@@ -42,7 +42,30 @@ io.on('connection', (socket) => {
     });
 });
 
-const PORT = process.env.PORT || 3000;
-http.listen(PORT, () => {
-    console.log(`Server is running on port ${PORT}`);
-});
+const DEFAULT_PORT = parseInt(process.env.PORT, 10) || 3000;
+const MAX_PORT_RETRIES = 10;
+
+function startServer(port, attempt = 0) {
+    http.listen(port, () => {
+        console.log(`Server is running on port ${port}`);
+    });
+
+    http.on('error', (err) => {
+        if (err && err.code === 'EADDRINUSE') {
+            if (attempt < MAX_PORT_RETRIES) {
+                const nextPort = port + 1;
+                console.warn(`Port ${port} in use, retrying on ${nextPort} (attempt ${attempt + 1}/${MAX_PORT_RETRIES})`);
+                // Remove current error listener before retrying to avoid multiple bindings
+                http.removeAllListeners('error');
+                startServer(nextPort, attempt + 1);
+            } else {
+                console.error(`Failed to bind after ${MAX_PORT_RETRIES} attempts starting at ${DEFAULT_PORT}. Exiting.`);
+                process.exit(1);
+            }
+        } else {
+            throw err;
+        }
+    });
+}
+
+startServer(DEFAULT_PORT);
