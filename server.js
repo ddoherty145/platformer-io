@@ -5,67 +5,135 @@ const io = require('socket.io')(http);
 
 app.use(express.static('public'));
 
+const GAME_WIDTH = 3000;
+const GAME_HEIGHT = 600;
+const GRAVITY = 0.5;
+const JUMP_FORCE = -12;
+const MOVE_SPEED = 5;
+const GROUND_Y = 550;
+
 const players = {};
+const playerColors = ['#ff6b6b', '#4ecdc4', '#45b7d1', '#f9ca24', '#6c5ce7', '#fd79a8'];
+let colorIndex = 0;
+
+// Game state
+const gameState = {
+  started: false,
+  winner: null
+};
 
 io.on('connection', (socket) => {
-    console.log('Player connected:', socket.id);
-
-    // Initialize player state
-    players[socket.id] = {
-        x: Math.random() * 800,
-        y: Math.random() * 600,
-        score: 0    
-    };
-
-    // Send current players to the new player
-    socket.emit('currentPlayers', players);
-
-    // Notify existing players of the new player
-    socket.broadcast.emit('newPlayer', { id: socket.id, ...players[socket.id] });
-
-    // Handle player movement
-    socket.on('playerMovement', (data) => {
-        if (players[socket.id]) {
-            players[socket.id].x = data.x;
-            players[socket.id].y = data.y;
-            // Broadcast the movement to all players
-            socket.broadcast.emit('playerMoved', { id: socket.id, x: data.x, y: data.y });
-                }
-    });
-
-    // Handle player disconnection
-    socket.on('disconnect', () => {
-        console.log('Player disconnected:', socket.id);
-        delete players[socket.id];
-        // Notify all players of the disconnection
-        io.emit('playerDisconnected', socket.id);
-    });
+  console.log('Player connected:', socket.id);
+  
+  // Assign player color
+  const playerColor = playerColors[colorIndex % playerColors.length];
+  colorIndex++;
+  
+  // Initialize new player
+  players[socket.id] = {
+    id: socket.id,
+    x: 100,
+    y: GROUND_Y - 30,
+    vx: 0,
+    vy: 0,
+    width: 30,
+    height: 30,
+    color: playerColor,
+    onGround: true,
+    finished: false,
+    finishTime: null,
+    name: `Player${Object.keys(players).length}`
+  };
+  
+  // Send game state to new player
+  socket.emit('init', {
+    id: socket.id,
+    players: players,
+    gameState: gameState
+  });
+  
+  // Notify others about new player
+  socket.broadcast.emit('newPlayer', players[socket.id]);
+  
+  // Handle player input
+  socket.on('input', (input) => {
+    const player = players[socket.id];
+    if (!player || player.finished) return;
+    
+    player.vx = 0;
+    
+    if (input.left) player.vx = -MOVE_SPEED;
+    if (input.right) player.vx = MOVE_SPEED;
+    if (input.jump && player.onGround) {
+      player.vy = JUMP_FORCE;
+      player.onGround = false;
+    }
+  });
+  
+  socket.on('disconnect', () => {
+    console.log('Player disconnected:', socket.id);
+    delete players[socket.id];
+    io.emit('playerDisconnected', socket.id);
+    
+    // Reset game if no players
+    if (Object.keys(players).length === 0) {
+      gameState.started = false;
+      gameState.winner = null;
+    }
+  });
 });
 
-const DEFAULT_PORT = parseInt(process.env.PORT, 10) || 3000;
-const MAX_PORT_RETRIES = 10;
+// Game loop - runs on server
+setInterval(() => {
+  Object.values(players).forEach(player => {
+    if (player.finished) return;
+    
+    // Apply gravity
+    player.vy += GRAVITY;
+    
+    // Update position
+    player.x += player.vx;
+    player.y += player.vy;
+    
+    // Ground collision
+    if (player.y >= GROUND_Y - player.height) {
+      player.y = GROUND_Y - player.height;
+      player.vy = 0;
+      player.onGround = true;
+    }
+    
+    // Boundary check
+    if (player.x < 0) player.x = 0;
+    if (player.x > GAME_WIDTH) player.x = GAME_WIDTH;
+    
+    // Check if reached finish line
+    if (player.x >= GAME_WIDTH - 100 && !player.finished) {
+      player.finished = true;
+      player.finishTime = Date.now();
+      
+      // Check if first to finish
+      if (!gameState.winner) {
+        gameState.winner = {
+          id: player.id,
+          name: player.name,
+          color: player.color
+        };
+        io.emit('gameWon', gameState.winner);
+      }
+      
+      io.emit('playerFinished', {
+        id: player.id,
+        name: player.name,
+        position: Object.values(players).filter(p => p.finished).length
+      });
+    }
+  });
+  
+  // Broadcast game state to all clients
+  io.emit('update', players);
+}, 1000 / 60); // 60 FPS
 
-function startServer(port, attempt = 0) {
-    http.listen(port, () => {
-        console.log(`Server is running on port ${port}`);
-    });
-
-    http.on('error', (err) => {
-        if (err && err.code === 'EADDRINUSE') {
-            if (attempt < MAX_PORT_RETRIES) {
-                const nextPort = port + 1;
-                console.warn(`Port ${port} in use, retrying on ${nextPort} (attempt ${attempt + 1}/${MAX_PORT_RETRIES})`);
-                // Remove current error listener before retrying to avoid multiple bindings
-                http.removeAllListeners('error');
-                startServer(nextPort, attempt + 1);
-            } else {
-                console.error(`Failed to bind after ${MAX_PORT_RETRIES} attempts starting at ${DEFAULT_PORT}. Exiting.`);
-                process.exit(1);
-            }
-        } else {
-            throw err;
-        }
-    });
-}
-
-startServer(DEFAULT_PORT);
+const PORT = process.env.PORT || 3000;
+http.listen(PORT, () => {
+  console.log(`Server running on port ${PORT}`);
+});
