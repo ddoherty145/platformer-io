@@ -4,13 +4,15 @@ const socket = io();
 
 let myId = null;
 let players = {};
+let platforms = [];
 let camera = { x: 0, y: 0 };
 
-const GAME_WIDTH = 3000;
-const GAME_HEIGHT = 600;
+const GAME_WIDTH = 800;
+const GAME_HEIGHT = 3000;
 const VIEWPORT_WIDTH = 800;
 const VIEWPORT_HEIGHT = 600;
-const GROUND_Y = 550;
+const GROUND_Y = GAME_HEIGHT - 50;
+const FINISH_Y = 50;
 
 // Input handling
 const keys = {};
@@ -39,14 +41,16 @@ setInterval(() => {
 socket.on('init', (data) => {
   myId = data.id;
   players = data.players;
+  platforms = data.platforms;
 });
 
 socket.on('newPlayer', (player) => {
   players[player.id] = player;
 });
 
-socket.on('update', (serverPlayers) => {
-  players = serverPlayers;
+socket.on('update', (data) => {
+  players = data.players;
+  platforms = data.platforms;
   updateUI();
 });
 
@@ -84,7 +88,7 @@ function updateUI() {
       document.getElementById('position').textContent = `Finished: Position ${myPosition}`;
     } else {
       const position = unfinishedPlayers
-        .sort((a, b) => b.x - a.x)
+        .sort((a, b) => a.y - b.y) // Sort by Y position (lower Y = higher up)
         .findIndex(p => p.id === myId) + 1;
       document.getElementById('position').textContent = `Position: ${position}/${unfinishedPlayers.length}`;
     }
@@ -97,43 +101,64 @@ function drawLevel() {
   ctx.fillStyle = '#228B22';
   ctx.fillRect(-camera.x, GROUND_Y - camera.y, GAME_WIDTH, 50);
   
-  // Platforms
-  const platforms = [
-    { x: 300, y: 450, w: 150, h: 20 },
-    { x: 550, y: 380, w: 150, h: 20 },
-    { x: 800, y: 320, w: 150, h: 20 },
-    { x: 1050, y: 380, w: 150, h: 20 },
-    { x: 1300, y: 450, w: 150, h: 20 },
-    { x: 1550, y: 350, w: 150, h: 20 },
-    { x: 1800, y: 280, w: 150, h: 20 },
-    { x: 2050, y: 350, w: 150, h: 20 },
-    { x: 2300, y: 420, w: 150, h: 20 },
-    { x: 2550, y: 480, w: 150, h: 20 }
-  ];
-  
-  ctx.fillStyle = '#8B4513';
+  // Draw platforms
   platforms.forEach(platform => {
+    if (platform.type === 'disappearing' && !platform.visible) return;
+    
+    let platformColor = '#8B4513'; // Default brown
+    
+    if (platform.type === 'moving') {
+      platformColor = '#FF6B35'; // Orange for moving platforms
+    } else if (platform.type === 'disappearing') {
+      // Fade out when about to disappear
+      const fadeTime = platform.timer / 2000;
+      const alpha = platform.visible ? (fadeTime > 0.8 ? 1 - (fadeTime - 0.8) / 0.2 : 1) : 0;
+      platformColor = `rgba(255, 107, 53, ${alpha})`;
+    }
+    
+    ctx.fillStyle = platformColor;
     ctx.fillRect(
       platform.x - camera.x,
       platform.y - camera.y,
       platform.w,
       platform.h
     );
+    
+    // Add visual indicators
+    if (platform.type === 'moving') {
+      ctx.fillStyle = 'rgba(255, 255, 255, 0.3)';
+      ctx.fillRect(
+        platform.x - camera.x,
+        platform.y - camera.y,
+        platform.w,
+        5
+      );
+    } else if (platform.type === 'disappearing') {
+      ctx.fillStyle = 'rgba(255, 255, 255, 0.5)';
+      ctx.fillRect(
+        platform.x - camera.x,
+        platform.y - camera.y,
+        platform.w,
+        3
+      );
+    }
   });
   
-  // Start line
+  // Start line (at bottom)
   ctx.fillStyle = '#00ff00';
-  ctx.fillRect(50 - camera.x, 0 - camera.y, 5, GAME_HEIGHT);
+  ctx.fillRect(0 - camera.x, GROUND_Y - camera.y, GAME_WIDTH, 5);
   ctx.fillStyle = 'white';
   ctx.font = '20px Arial';
-  ctx.fillText('START', 60 - camera.x, 30 - camera.y);
+  ctx.textAlign = 'center';
+  ctx.fillText('START', GAME_WIDTH/2 - camera.x, GROUND_Y - 10 - camera.y);
   
-  // Finish line
+  // Finish line (at top)
   ctx.fillStyle = '#ff0000';
-  ctx.fillRect(GAME_WIDTH - 100 - camera.x, 0 - camera.y, 5, GAME_HEIGHT);
+  ctx.fillRect(0 - camera.x, FINISH_Y - camera.y, GAME_WIDTH, 5);
   ctx.fillStyle = 'white';
   ctx.font = '20px Arial';
-  ctx.fillText('FINISH', GAME_WIDTH - 95 - camera.x, 30 - camera.y);
+  ctx.textAlign = 'center';
+  ctx.fillText('FINISH', GAME_WIDTH/2 - camera.x, FINISH_Y + 25 - camera.y);
 }
 
 // Draw players
@@ -177,10 +202,11 @@ function gameLoop() {
   if (myId && players[myId]) {
     const player = players[myId];
     camera.x = player.x - VIEWPORT_WIDTH / 2;
-    camera.y = 0;
+    camera.y = player.y - VIEWPORT_HEIGHT / 2;
     
     // Clamp camera
     camera.x = Math.max(0, Math.min(camera.x, GAME_WIDTH - VIEWPORT_WIDTH));
+    camera.y = Math.max(0, Math.min(camera.y, GAME_HEIGHT - VIEWPORT_HEIGHT));
   }
   
   // Clear canvas
